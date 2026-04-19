@@ -1,0 +1,11 @@
+source "https://rubygems.org"
+
+gemspec
+
+gem "undercover", github: "grodowski/undercover", branch: "json-output-format"
+
+group :test do
+  gem "simplecov"
+  gem "minitest"
+  gem "rake"
+end

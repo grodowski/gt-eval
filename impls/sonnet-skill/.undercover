@@ -1,0 +1,2 @@
+-c b0dd918eac4979e9ab1e10bb4897aea7e0392990
+--exclude-files "Rakefile,lib/gt/version.rb"
