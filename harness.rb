@@ -289,6 +289,116 @@ class SyncTest < Minitest::Test
   end
 end
 
+# ---------------------------------------------------------------------------
+# Two independent stacks rooted at main:
+#   main → alpha-1 → alpha-2
+#   main → beta-1  → beta-2
+# This is a common failure mode: implementations that assume a single linear
+# stack break when gt-parent metadata for two different branches both point
+# to main, and navigation/restack logic gets confused.
+# ---------------------------------------------------------------------------
+class DualStackTest < Minitest::Test
+  include GTHarness::Sandbox
+
+  def setup
+    super
+    # Build stack 1: main → alpha-1 → alpha-2
+    git("checkout", "main")
+    write_file("a1.txt")
+    gt("create", "alpha-1", "-m", "Alpha 1")
+    write_file("a2.txt")
+    gt("create", "alpha-2", "-m", "Alpha 2")
+
+    # Build stack 2: main → beta-1 → beta-2
+    git("checkout", "main")
+    write_file("b1.txt")
+    gt("create", "beta-1", "-m", "Beta 1")
+    write_file("b2.txt")
+    gt("create", "beta-2", "-m", "Beta 2")
+    # Now on beta-2
+  end
+
+  def test_both_stack_tips_exist
+    branches = git("branch", "--list").split.map(&:strip).map { |b| b.delete_prefix("* ") }
+    assert_includes branches, "alpha-2", "alpha-2 branch missing"
+    assert_includes branches, "beta-2",  "beta-2 branch missing"
+  end
+
+  def test_parent_metadata_is_independent
+    alpha1_parent = git("config", "--local", "--get", "branch.alpha-1.gt-parent") rescue nil
+    beta1_parent  = git("config", "--local", "--get", "branch.beta-1.gt-parent")  rescue nil
+    assert_equal "main", alpha1_parent&.strip, "alpha-1 parent should be main"
+    assert_equal "main", beta1_parent&.strip,  "beta-1 parent should be main"
+
+    alpha2_parent = git("config", "--local", "--get", "branch.alpha-2.gt-parent") rescue nil
+    beta2_parent  = git("config", "--local", "--get", "branch.beta-2.gt-parent")  rescue nil
+    assert_equal "alpha-1", alpha2_parent&.strip, "alpha-2 parent should be alpha-1"
+    assert_equal "beta-1",  beta2_parent&.strip,  "beta-2 parent should be beta-1"
+  end
+
+  def test_navigation_stays_within_alpha_stack
+    git("checkout", "alpha-2")
+    gt("down")
+    assert_equal "alpha-1", current_branch,
+      "gt down from alpha-2 should land on alpha-1, not beta-1 or anything else"
+  end
+
+  def test_navigation_stays_within_beta_stack
+    # already on beta-2 from setup
+    gt("down")
+    assert_equal "beta-1", current_branch,
+      "gt down from beta-2 should land on beta-1, not alpha-1"
+  end
+
+  def test_restack_does_not_bleed_across_stacks
+    # Add an extra commit to alpha-1 so alpha-2 needs rebasing
+    git("checkout", "alpha-1")
+    write_file("a1b.txt")
+    git("commit", "-m", "Alpha 1b")
+
+    # Capture beta-2's current base commit before any restack
+    beta2_base_before = git("log", "--oneline", "beta-2")
+
+    # Restack alpha stack
+    git("checkout", "alpha-2")
+    _, _, st = gt("restack")
+    assert st.success?, "gt restack on alpha stack failed"
+
+    # alpha-2 should now include Alpha 1b
+    alpha2_log = git("log", "--oneline", "alpha-2")
+    assert_match "Alpha 1b", alpha2_log, "alpha-2 should be rebased onto new alpha-1 tip"
+
+    # beta-2 should be completely unchanged
+    beta2_base_after = git("log", "--oneline", "beta-2")
+    assert_equal beta2_base_before, beta2_base_after,
+      "beta-2 commit history changed after restacking the alpha stack"
+  end
+
+  def test_log_shows_current_stack
+    # Setup ends on beta-2; log should show the beta stack only
+    out, _, st = gt("log")
+    out = gt("ls")[0] if out.empty?
+    assert st.success?, "gt log/ls failed"
+    assert_match "beta-1", out, "log should show beta-1 (current stack)"
+    assert_match "beta-2", out, "log should show beta-2 (current stack)"
+    refute_match "alpha-1", out, "log should not show alpha stack while on beta"
+    refute_match "alpha-2", out, "log should not show alpha stack while on beta"
+  end
+
+  def test_log_follows_current_branch_after_stack_switch
+    # Setup ends on beta-2. Switch to the alpha stack and verify log
+    # reflects alpha, not the previously-active beta stack.
+    git("checkout", "alpha-2")
+    out, _, st = gt("log")
+    out = gt("ls")[0] if out.empty?
+    assert st.success?, "gt log/ls failed after switching stacks"
+    assert_match "alpha-1", out, "log should show alpha-1 after switching to alpha stack"
+    assert_match "alpha-2", out, "log should show alpha-2 after switching to alpha stack"
+    refute_match "beta-1",  out, "log should NOT show beta stack after switching to alpha stack"
+    refute_match "beta-2",  out, "log should NOT show beta stack after switching to alpha stack"
+  end
+end
+
 class AmendTest < Minitest::Test
   include GTHarness::Sandbox
 
